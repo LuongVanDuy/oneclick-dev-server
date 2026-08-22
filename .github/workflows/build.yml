@@ -1,4 +1,4 @@
-name: Build Windows App
+name: Build OneClick Dev Server
 
 on:
   push:
@@ -8,18 +8,44 @@ on:
 
 jobs:
   build:
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            goos: windows
+            output: oneclick-dev-server-windows-amd64.exe
+            artifact: oneclick-dev-server-windows-amd64
+          - runner: ubuntu-latest
+            goos: linux
+            output: oneclick-dev-server-linux-amd64
+            artifact: oneclick-dev-server-linux-amd64
+
+    runs-on: ${{ matrix.runner }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup .NET 10
-        uses: actions/setup-dotnet@v4
+      - name: Setup Go 1.27
+        uses: actions/setup-go@v6
         with:
-          dotnet-version: '10.0.x'
+          go-version: '1.27.x'
+          cache: true
 
-      - name: Restore
-        run: dotnet restore src/OneClickDevServer/OneClickDevServer.csproj
+      - name: Test
+        shell: bash
+        run: go test ./...
 
-      - name: Build
-        run: dotnet build src/OneClickDevServer/OneClickDevServer.csproj --configuration Release --no-restore
+      - name: Build standalone binary
+        shell: bash
+        run: |
+          mkdir -p dist
+          CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=amd64 go build -trimpath -o dist/${{ matrix.output }} ./cmd/oneclick-dev-server
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/${{ matrix.output }}
+          if-no-files-found: error
