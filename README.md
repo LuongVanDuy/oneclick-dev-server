@@ -1,12 +1,10 @@
 # OneClick Dev Server
 
-> **PROJECT SOURCE OF TRUTH** — Đọc file này trước khi sửa code. Mọi thay đổi kiến trúc, logic, file mới, milestone và quyết định kỹ thuật phải được cập nhật vào README trong cùng commit/PR.
+> **PROJECT SOURCE OF TRUTH** — Đọc file này trước khi sửa code. Mọi thay đổi kiến trúc, logic, file mới, milestone và quyết định kỹ thuật phải cập nhật vào README trong cùng commit/PR.
 
-## 1. Mục tiêu dự án
+## 1. Mục tiêu
 
-OneClick Dev Server là một ứng dụng cross-platform giúp chọn một website/project đang nằm trên máy local và chạy/public nó trong **môi trường VM cô lập riêng**, thay vì chạy source không tin cậy trực tiếp trên máy host.
-
-Mục tiêu trải nghiệm:
+OneClick Dev Server là ứng dụng cross-platform để chọn website/project trên máy local và chạy/public nó trong **VM cô lập riêng**, thay vì chạy source không tin cậy trực tiếp trên host.
 
 ```text
 Mở OneClick Dev Server
@@ -19,25 +17,21 @@ Create isolated environment
         ↓
 1 project = 1 VM riêng
         ↓
-Web runtime + DB + disk + tunnel riêng
+Runtime + DB + disk + network + tunnel riêng
         ↓
 Start / Stop / Sync / Reset / Delete / Public
 ```
 
-### Windows
+### Project roots mặc định
 
-Nguồn project mặc định:
+Windows:
 
 ```text
 C:\xampp\htdocs\*
 C:\laragon\www\*
 ```
 
-Virtualization backend mục tiêu: **Hyper-V**.
-
-### Ubuntu/Linux
-
-Nguồn project mặc định:
+Linux/Ubuntu:
 
 ```text
 /var/www/*
@@ -45,238 +39,227 @@ Nguồn project mặc định:
 ~/projects/*
 ```
 
-Virtualization backend mục tiêu: **KVM/QEMU/libvirt**.
+Root bổ sung: biến môi trường `ONECLICK_PROJECT_ROOTS` theo path-list của hệ điều hành.
 
-Có thể thêm root tùy chỉnh bằng biến môi trường `ONECLICK_PROJECT_ROOTS`.
+### Virtualization backend mục tiêu
+
+```text
+Windows → Hyper-V
+Linux   → KVM/QEMU/libvirt
+```
 
 ---
 
-## 2. Quy tắc bảo mật bắt buộc
+## 2. Security model bắt buộc
 
-### Core invariant
+### Core invariant: 1 project = 1 VM
 
-**1 project = 1 VM.**
+Không chạy nhiều site không tin cậy chung một VM. Một site bị compromise không được dùng chung writable disk, DB, runtime hoặc tunnel với site khác.
 
-Không chạy nhiều site không tin cậy chung một VM nếu mục tiêu isolation vẫn còn hiệu lực.
+### Source trên host chỉ để đọc/copy
 
-### Source trên host chỉ là nguồn đọc/copy
+Ví dụ `C:\xampp\htdocs\site-a` chỉ là source. Nó **không** được dùng làm guest document root và **không** bind-mount/shared-folder vào guest.
 
-Ví dụ:
-
-```text
-C:\xampp\htdocs\site-a
-```
-
-không bao giờ được dùng làm document root trực tiếp của guest và không được bind-mount/shared-folder vào VM.
-
-Source phải được **copy một chiều** vào VM. Guest không có writable path quay lại source gốc trên host.
+Sync phải là one-way: host → guest. Guest không có writable reference quay lại source gốc.
 
 ### Không malware scan gate
 
-Dự án không dựa vào việc quét malware trước khi chạy. Mọi project được coi là **untrusted từ đầu**. Bảo mật đến từ containment/isolation.
+Mọi source được coi là **untrusted từ đầu**. Dự án dựa vào containment/isolation, không dựa vào việc kết luận source sạch.
 
 ### Không chia sẻ tài nguyên giữa site
 
-Mỗi site phải có riêng:
+Mỗi site có riêng:
 
 - VM
-- writable disk
+- writable disk/overlay
 - web runtime
 - database
 - network identity
-- Cloudflare Tunnel/public tunnel
+- public tunnel
 
-Không dùng chung MySQL/XAMPP/Laragon runtime trên host.
+Không dùng MySQL/Apache/PHP của XAMPP/Laragon trên host để chạy site sandbox.
 
 ### Không đưa dữ liệu host vào guest
 
-Guest không được nhận:
+Không đưa vào guest:
 
 - host credentials
 - SSH keys
-- browser profile
 - Git credentials
-- clipboard/drive mapping như một dependency
-- shared writable host folder
+- browser profile
+- host drive mapping
+- shared writable folders
+- clipboard/Enhanced Session như dependency của runtime
 
 ### Network isolation
 
-VM site phải bị chặn truy cập:
+VM site phải bị chặn chủ động truy cập:
 
-- host management address
+- host management addresses
 - private LAN không cần thiết
 - VM của site khác
 
-Guest chỉ cần outbound Internet cho dependency và tunnel. IPv6 phải có rule tương đương hoặc bị disable trên sandbox network để không bypass IPv4 isolation.
+Guest chỉ cần outbound Internet cho dependency và tunnel. IPv6 phải có policy tương đương hoặc bị disable trên sandbox network.
 
-### Security wording
+### Public tunnel
 
-VM/hypervisor là security boundary mạnh nhưng **không được mô tả là tuyệt đối 100%** chống mọi hypervisor vulnerability.
+Tunnel phục vụ untrusted site phải chạy **bên trong VM của site đó**, không chạy trên host.
 
-Chi tiết threat model cũ hiện vẫn nằm ở `docs/isolation-architecture.md`; khi logic trong README và file đó mâu thuẫn, **README là nguồn chuẩn mới hơn**.
+### Giới hạn cam kết
+
+Hypervisor là security boundary mạnh nhưng không được mô tả là bảo vệ tuyệt đối 100% khỏi mọi hypervisor vulnerability.
+
+`docs/isolation-architecture.md` là tài liệu prototype cũ; nếu mâu thuẫn, README này là nguồn chuẩn mới hơn.
 
 ---
 
-## 3. Kiến trúc hiện tại
+## 3. Kiến trúc chính
 
-Dự án đang chuyển từ prototype .NET/WPF sang **Go + embedded web UI** để chạy được Windows và Linux mà người dùng không cần cài .NET SDK.
+Dự án đã chuyển hướng từ .NET/WPF sang **Go + embedded web UI** để build binary độc lập cho Windows/Linux và không buộc user cài .NET.
 
-Kiến trúc mục tiêu:
+Go 1.27 là toolchain hiện tại của project.
 
 ```text
 ┌────────────────────────────────────────────┐
 │ OneClick Dev Server (Go binary)            │
 │                                            │
-│  HTTP server: 127.0.0.1 only               │
-│  Embedded Web UI                           │
-│  REST API                                  │
+│  127.0.0.1:3765                            │
+│  ├── Embedded Web UI                       │
+│  └── REST API                              │
 │                                            │
 │  Core                                      │
 │  ├── Project Discovery                     │
-│  ├── Sandbox Lifecycle                     │
-│  ├── Source Sync                           │
-│  ├── Tunnel Manager                        │
-│  └── State / Logs                          │
+│  ├── Sandbox Lifecycle      (planned)       │
+│  ├── Source Sync            (planned)       │
+│  ├── Tunnel Manager         (planned)       │
+│  └── State / Logs           (planned)       │
 │                                            │
-│  Virtualization Adapter                    │
-│  ├── Windows → Hyper-V                     │
-│  └── Linux   → KVM/QEMU/libvirt            │
+│  Platform                                  │
+│  ├── Windows → Hyper-V      (planned)       │
+│  └── Linux   → libvirt/KVM  (planned)       │
 └────────────────────────────────────────────┘
 ```
 
-Ứng dụng cuối cùng nên build thành binary độc lập:
-
-```text
-Windows: oneclick-dev-server.exe
-Linux:   oneclick-dev-server
-```
-
-UI chạy local và chỉ bind loopback, ví dụ:
-
-```text
-http://127.0.0.1:3765
-```
-
-Không bind `0.0.0.0` mặc định cho management UI.
+Management UI **chỉ bind loopback**. Không đổi sang `0.0.0.0` mặc định và không public management UI qua tunnel của website.
 
 ---
 
-## 4. Trạng thái triển khai hiện tại
+## 4. Trạng thái triển khai
 
-### Đã có trên `main` trước migration Go
+### Runnable Go dashboard v1 — đã code trên `feat/go-cross-platform`
 
-Prototype .NET/WPF đã có:
+Đã có:
 
-- Windows desktop scaffold
-- Hyper-V/virtualization/admin prerequisite check
-- phát hiện project XAMPP/Laragon
-- sandbox identity/plan
-- thiết kế `one project = one VM`
-- CI Windows
-
-Prototype này nằm trong `src/OneClickDevServer/` và hiện là **legacy/reference implementation**, không phải kiến trúc dài hạn.
-
-### Đang triển khai trên `feat/go-cross-platform`
-
-Đã thêm:
-
-- `go.mod` — Go module mới
-- `internal/project/discovery.go` — project discovery cross-platform
-- Windows roots: XAMPP + Laragon
-- Linux roots: `/var/www`, `~/www`, `~/projects`
-- custom roots bằng `ONECLICK_PROJECT_ROOTS`
+- Go module
+- application entry point
+- HTTP server `127.0.0.1:3765`
+- embedded HTML/CSS/JS dashboard
+- browser auto-open best-effort
+- `GET /api/system`
+- `GET /api/projects`
+- project discovery Windows: XAMPP + Laragon
+- project discovery Linux: `/var/www`, `~/www`, `~/projects`
+- custom roots qua `ONECLICK_PROJECT_ROOTS`
 - bỏ qua symlink entry trong automatic discovery
+- platform target detection: Hyper-V / KVM-libvirt
+- test cho custom project root
+- CI matrix Windows + Ubuntu
+- CI build standalone Windows/Linux binaries
+- CI upload binary artifacts
 
-### Chưa triển khai
+Chưa có:
 
-- Go application entry point
-- local HTTP API
-- embedded web UI
-- browser auto-open
-- Hyper-V adapter bằng Go orchestration
-- KVM/libvirt adapter
+- Hyper-V adapter thật
+- KVM/libvirt adapter thật
+- prerequisite detection thật cho hypervisor
 - golden base image manager
-- VM creation thật
-- differencing disk / qcow2 overlay
-- isolated NAT/network ACL
+- VM creation
+- VHDX differencing / qcow2 overlay
+- isolated NAT/ACL/firewall
 - one-way source transfer thật
-- guest bootstrap PHP/Apache/Nginx/MariaDB
-- per-site Cloudflare Tunnel
+- guest PHP/Apache/Nginx/MariaDB bootstrap
+- Cloudflare Tunnel trong guest
 - Start/Stop/Sync/Reset/Delete lifecycle thật
-- binary release artifacts cho Windows/Linux
+- persistent sandbox state
+
+### Legacy .NET/WPF prototype
+
+`src/OneClickDevServer/` là prototype cũ đã merge vào `main` trước khi quyết định migrate sang Go. Không phát triển feature mới ở đây. Xóa folder này khi Go đạt feature parity tối thiểu.
 
 ---
 
-## 5. File map — đọc phần này để biết sửa ở đâu
+## 5. File map — sửa gì đọc file nào
 
-### Cross-platform Go implementation — kiến trúc chính mới
+### Go implementation hiện tại
 
-| File / folder | Trách nhiệm | Sửa khi nào |
+| File / folder | Trách nhiệm | Sửa khi |
 |---|---|---|
-| `go.mod` | Go module/version | thay Go version hoặc dependencies |
-| `internal/project/discovery.go` | tìm project local theo OS | thêm XAMPP/Laragon path, Linux roots, custom source roots, filtering |
-| `cmd/oneclick-dev-server/main.go` | **planned** entry point | startup, flags, port, shutdown, browser open |
-| `internal/server/` | **planned** local HTTP/API server | endpoints, loopback binding, middleware |
-| `internal/web/` | **planned** embedded frontend assets | UI dashboard và static embedding |
-| `internal/platform/` | **planned** adapter interface | contract chung Hyper-V/KVM |
-| `internal/platform/hyperv/` | **planned** Windows backend | Hyper-V VM/disk/network lifecycle |
-| `internal/platform/libvirt/` | **planned** Linux backend | KVM/QEMU/libvirt lifecycle |
-| `internal/sandbox/` | **planned** sandbox model/state | create/start/stop/reset/delete orchestration |
-| `internal/sync/` | **planned** one-way source sync | copy source host → guest, không shared folder |
-| `internal/tunnel/` | **planned** public tunnel | Cloudflare Tunnel per VM |
-| `internal/state/` | **planned** persistent metadata | lưu sandbox IDs, paths, status, config |
+| `go.mod` | Go module/toolchain | đổi Go version/dependency |
+| `cmd/oneclick-dev-server/main.go` | entry point, server startup, browser open, graceful shutdown | sửa startup/lifecycle process |
+| `internal/project/discovery.go` | tìm project local theo OS | thêm roots/filter/discovery behavior |
+| `internal/project/discovery_test.go` | test discovery | đổi discovery logic |
+| `internal/platform/platform.go` | detect OS và virtualization backend target | đổi platform mapping/status |
+| `internal/server/server.go` | local HTTP server và API routes | thêm/sửa API, middleware, bind behavior |
+| `internal/web/assets.go` | embed frontend static files | đổi cách đóng gói UI |
+| `internal/web/static/index.html` | dashboard UI hiện tại | sửa giao diện/project list/system panel |
+| `internal/browser/open.go` | mở browser theo OS | đổi browser launch behavior |
+| `.github/workflows/build.yml` | test/build artifact Windows + Ubuntu | đổi CI/build/release pipeline |
+
+### Planned folders
+
+| Folder | Trách nhiệm tương lai |
+|---|---|
+| `internal/platform/hyperv/` | Hyper-V VM/disk/network lifecycle |
+| `internal/platform/libvirt/` | KVM/QEMU/libvirt lifecycle |
+| `internal/sandbox/` | create/start/stop/reset/delete orchestration |
+| `internal/sync/` | one-way source transfer |
+| `internal/tunnel/` | Cloudflare Tunnel per VM |
+| `internal/state/` | persistent sandbox metadata/config |
 
 ### Documentation
 
 | File | Trách nhiệm |
 |---|---|
-| `README.md` | **single source of truth của toàn dự án**. Phải update mỗi khi logic/structure thay đổi. |
-| `docs/isolation-architecture.md` | tài liệu isolation giai đoạn prototype; giữ để tham khảo cho đến khi migration hoàn tất |
+| `README.md` | **single source of truth** — bắt buộc update khi code/logic/file map đổi |
+| `docs/isolation-architecture.md` | isolation notes từ prototype Windows |
 
-### Legacy .NET/WPF prototype
+### Legacy .NET/WPF
 
-Folder:
-
-```text
-src/OneClickDevServer/
-```
-
-Vai trò hiện tại: reference/prototype. Không mở rộng feature mới ở đây trừ khi cần sửa khẩn cấp cho bản legacy.
-
-Các file chính:
-
-| File | Logic cũ |
+| File/folder | Logic cũ |
 |---|---|
-| `MainWindow.xaml` | WPF UI prototype |
-| `MainWindow.xaml.cs` | event flow project discovery/safety/sandbox plan |
-| `Services/ProjectDiscoveryService.cs` | XAMPP/Laragon discovery cũ |
-| `Services/SandboxPlanner.cs` | sandbox ID/path plan cũ |
-| `Services/SafetyCheckService.cs` | prerequisite checks cũ |
-| `Services/PowerShellRunner.cs` | PowerShell invocation wrapper cũ |
-| `Models/*` | model prototype |
-| `OneClickDevServer.csproj` | .NET 10 WPF project |
-
-Khi Go migration đạt feature parity và binary Go chạy ổn, folder legacy này sẽ được xóa trong một PR riêng.
+| `src/OneClickDevServer/MainWindow.xaml` | WPF UI prototype |
+| `src/OneClickDevServer/MainWindow.xaml.cs` | event flow prototype |
+| `src/OneClickDevServer/Services/ProjectDiscoveryService.cs` | Windows discovery cũ |
+| `src/OneClickDevServer/Services/SandboxPlanner.cs` | sandbox ID/path plan cũ |
+| `src/OneClickDevServer/Services/SafetyCheckService.cs` | Hyper-V/admin check cũ |
+| `src/OneClickDevServer/Services/PowerShellRunner.cs` | PowerShell wrapper cũ |
+| `src/OneClickDevServer/Models/` | models cũ |
+| `src/OneClickDevServer/OneClickDevServer.csproj` | .NET 10 WPF project |
 
 ---
 
-## 6. Runtime flow mục tiêu
-
-### Startup
+## 6. Runtime flow hiện tại
 
 ```text
-binary start
-   ↓
-detect OS
-   ↓
-select virtualization adapter
-   ↓
-start HTTP server on 127.0.0.1
-   ↓
-load embedded UI
-   ↓
-discover local projects
+oneclick-dev-server binary
+        ↓
+server.New("127.0.0.1:3765")
+        ↓
+embedded UI + REST API
+        ↓
+browser.Open(local URL)
+        ↓
+/api/system  → platform.Detect()
+/api/projects → project.Discover()
 ```
+
+Nếu browser không tự mở (ví dụ Linux headless), server vẫn chạy và log URL để user mở thủ công.
+
+Hiện dashboard **không có action tạo VM giả**. VirtualizationReady đang false cho đến khi adapter thật được triển khai.
+
+---
+
+## 7. Runtime flow mục tiêu
 
 ### Create environment
 
@@ -285,15 +268,15 @@ User selects project
    ↓
 Generate deterministic sandbox ID
    ↓
-Prepare isolated VM disk from golden base
+Prepare private overlay from golden base
    ↓
 Create dedicated VM
    ↓
-Create isolated network identity/rules
+Apply network isolation before workload start
    ↓
 One-way copy source into guest
    ↓
-Bootstrap web runtime + DB
+Bootstrap runtime + DB
    ↓
 Start site
 ```
@@ -303,14 +286,12 @@ Start site
 ```text
 User clicks Public
    ↓
-cloudflared runs INSIDE that site's VM
+cloudflared runs inside selected VM
    ↓
 Tunnel → guest web server
    ↓
-Return public HTTPS URL to UI
+UI receives HTTPS URL
 ```
-
-Tunnel không chạy trên host nếu nó phục vụ untrusted site.
 
 ### Sync
 
@@ -319,23 +300,20 @@ Host source changed
    ↓
 User clicks Sync
    ↓
-Create clean one-way transfer snapshot/package
+Create one-way transfer artifact/disk
    ↓
-Guest imports it
+Guest imports snapshot
    ↓
-No writable guest reference to host source
+No guest writable reference to host source
 ```
 
-Trên Hyper-V, thiết kế dự kiến dùng transfer VHDX transient hoặc cơ chế tương đương đảm bảo one-way semantics. Trên Linux adapter có thể dùng một transient image/archive path với security properties tương đương.
+Hyper-V design có thể dùng transient transfer VHDX. Linux backend dùng cơ chế tương đương với cùng security property.
 
 ### Reset
 
-Reset phải chỉ ảnh hưởng site được chọn:
-
 ```text
 site-a reset
-  → destroy site-a writable state
-  → recreate from clean base
+  → destroy/recreate site-a writable state
 
 site-b
   → untouched
@@ -343,23 +321,20 @@ site-b
 
 ---
 
-## 7. Data layout mục tiêu
+## 8. Data layout mục tiêu
 
-Không lưu runtime sandbox vào source tree của user.
+Không lưu sandbox runtime vào source tree của user.
 
-Ví dụ Windows:
+Windows dự kiến:
 
 ```text
 %ProgramData%\OneClickDevServer\
 ├── images\
-│   └── base.*
 ├── sandboxes\
-│   ├── site-a-<hash>\
-│   └── site-b-<hash>\
 └── state\
 ```
 
-Linux:
+Linux dự kiến:
 
 ```text
 /var/lib/oneclick-dev-server/
@@ -368,93 +343,104 @@ Linux:
 └── state/
 ```
 
-Exact paths có thể thay đổi khi implementation bắt đầu; nếu thay, update README ngay.
+Nếu implementation chọn path khác, cập nhật README cùng PR.
 
 ---
 
-## 8. Sandbox identity
+## 9. Sandbox identity
 
-Sandbox ID phải deterministic từ project name + normalized absolute source path để hai folder trùng tên không collision.
+Sandbox ID phải deterministic từ project name + normalized absolute path để project trùng tên không collision.
 
-Prototype .NET đã dùng dạng:
+Format định hướng:
 
 ```text
 <safe-project-name>-<short-path-hash>
 ```
 
-Go implementation nên giữ nguyên ý tưởng để migration state dễ hiểu.
-
-Không dùng raw user path làm shell command text mà không escaping/structured execution.
+Không đưa raw user path vào shell string bằng nối chuỗi. Platform adapter phải dùng structured arguments/escaped execution.
 
 ---
 
-## 9. API/UI nguyên tắc
+## 10. API/UI rules
 
 Management API/UI:
 
-- bind `127.0.0.1` mặc định
-- không public management UI qua Cloudflare Tunnel
-- endpoints thay đổi state phải validate project/sandbox ID
-- không nhận arbitrary shell command từ browser
-- frontend không trực tiếp thực thi host command
-- host command execution nằm trong platform adapter với input có cấu trúc
+- chỉ bind loopback mặc định
+- không public qua site tunnel
+- endpoint thay đổi state phải validate project/sandbox ID
+- browser không được gửi arbitrary shell command
+- frontend không trực tiếp chạy host commands
+- host operations nằm trong platform adapter với input có cấu trúc
+- destructive actions sau này phải scoped đúng sandbox ID
 
-UI mục tiêu:
+API hiện có:
 
 ```text
-Projects
-├── site-a   XAMPP
-├── site-b   Laragon
-└── site-c   Projects
+GET /api/system
+GET /api/projects
+```
 
-Selected site
-├── Create Environment
-├── Start
-├── Stop
-├── Sync
-├── Reset
-├── Delete
-└── Public
+UI hiện có:
+
+```text
+System panel
+Projects list
+Refresh projects
+```
+
+UI mục tiêu sau VM adapter:
+
+```text
+Create Environment
+Start
+Stop
+Sync
+Reset
+Delete
+Public
 ```
 
 ---
 
-## 10. Build và release strategy
+## 11. Build và test
 
-### Development
+CI file: `.github/workflows/build.yml`.
 
-CI phải build/test Go trên ít nhất:
+Mỗi PR/main push:
 
-- Windows
-- Ubuntu
+```text
+Windows runner ─┐
+                ├─ go test ./...
+Ubuntu runner  ─┘
+                ↓
+standalone build
+                ↓
+artifact upload
+```
 
-### Release mục tiêu
-
-Cross-compile hoặc matrix build tạo:
+Artifacts:
 
 ```text
 oneclick-dev-server-windows-amd64.exe
 oneclick-dev-server-linux-amd64
 ```
 
-Có thể thêm arm64 sau.
+Người dùng tải artifact/release binary **không cần cài Go SDK hoặc .NET SDK**.
 
-Người dùng cuối **không cần Go SDK** nếu tải release binary.
-
-Trong giai đoạn dev, người clone source để `go run` cần Go SDK. Sau khi GitHub Actions xuất artifact/release binary, việc test thường ngày nên dùng binary đó.
+Người clone source và muốn `go run` thì cần Go SDK.
 
 ---
 
-## 11. Quy tắc phát triển từ bây giờ
+## 12. Quy tắc phát triển
 
-Mỗi feature phải theo flow:
+Flow bắt buộc:
 
 ```text
 branch nhỏ
    ↓
 code
    ↓
-update README trong cùng PR
+update README cùng PR
    ↓
 CI Windows + Linux pass
    ↓
@@ -463,82 +449,89 @@ merge main
 main luôn có bản test được
 ```
 
-### README update checklist bắt buộc
+### README checklist trước merge
 
-Khi thêm/sửa feature, cập nhật ít nhất những phần bị ảnh hưởng:
+Khi feature đổi, kiểm tra:
 
-1. `Trạng thái triển khai hiện tại`
+1. `Trạng thái triển khai`
 2. `File map`
-3. `Runtime flow` nếu logic đổi
-4. `Security rules` nếu boundary đổi
+3. `Runtime flow`
+4. `Security model` nếu boundary đổi
 5. `Changelog`
 6. `Next milestone`
 
-Nếu tạo file mới mà file map chưa có → PR chưa hoàn thành.
+**File mới không có trong File map → PR chưa hoàn thành.**
 
-Nếu thay đổi behavior mà README vẫn mô tả behavior cũ → PR chưa hoàn thành.
+**Behavior đổi nhưng README vẫn mô tả behavior cũ → PR chưa hoàn thành.**
 
 ---
 
-## 12. Changelog kỹ thuật
+## 13. Changelog kỹ thuật
+
+### 2026-08-22 — Runnable Go dashboard v1
+
+- thêm `cmd/oneclick-dev-server/main.go`
+- local management server bind `127.0.0.1:3765`
+- thêm `internal/server/server.go`
+- thêm embedded dashboard `internal/web/`
+- thêm `/api/system` và `/api/projects`
+- thêm browser auto-open best-effort
+- thêm platform target detection
+- thêm project discovery test
+- CI đổi sang Go matrix Windows + Ubuntu
+- CI build/upload standalone binaries
 
 ### 2026-08-22 — Go cross-platform migration started
 
-- quyết định bỏ .NET/WPF làm kiến trúc dài hạn
-- chọn Go cho core/binary cross-platform
-- chọn embedded local web UI
-- Windows backend mục tiêu: Hyper-V
-- Linux backend mục tiêu: KVM/QEMU/libvirt
+- bỏ .NET/WPF làm kiến trúc dài hạn
+- chọn Go + embedded web UI
+- Windows target: Hyper-V
+- Linux target: KVM/QEMU/libvirt
 - thêm `go.mod`
-- thêm `internal/project/discovery.go`
-- project discovery Windows: XAMPP + Laragon
-- project discovery Linux: `/var/www`, `~/www`, `~/projects`
-- thêm `ONECLICK_PROJECT_ROOTS`
+- thêm cross-platform project discovery
 - README trở thành project source of truth
 
 ### 2026-08-22 — Isolation model established
 
-- bỏ malware scanning gate
-- mọi source được coi là untrusted
-- thiết lập invariant `1 project = 1 VM`
-- source host chỉ read/copy, không mount trực tiếp vào guest
-- mỗi site có disk/runtime/DB/tunnel riêng
-- VM phải bị isolate khỏi host/LAN/site khác
-- tunnel của site chạy trong guest
+- không malware scan gate
+- mọi source coi là untrusted
+- `1 project = 1 VM`
+- source host chỉ read/copy
+- disk/runtime/DB/tunnel riêng từng site
+- network isolation host/LAN/site khác
+- tunnel chạy trong guest
 
 ### 2026-08-22 — Initial Windows prototype
 
-- tạo .NET 10 WPF scaffold
-- project discovery XAMPP/Laragon
-- safety/prerequisite checks
+- .NET 10 WPF scaffold
+- XAMPP/Laragon discovery
+- safety checks
 - sandbox planner
 - Windows CI
-- prototype được merge vào `main` trước khi quyết định migrate sang Go
+- merge prototype vào `main` trước Go migration
 
 ---
 
-## 13. Next milestone
+## 14. Next milestone
 
-Milestone đang làm: **Go runnable dashboard v1**.
+**Virtualization prerequisites + adapter contract.**
 
-Definition of done:
+Definition of done dự kiến:
 
-- [ ] `cmd/oneclick-dev-server/main.go`
-- [ ] HTTP server bind loopback
-- [ ] embedded HTML/CSS/JS UI
-- [ ] `/api/system` trả OS/backend target
-- [ ] `/api/projects` trả project discovery hiện tại
-- [ ] Windows binary build thành công
-- [ ] Linux binary build thành công
-- [ ] CI matrix Windows + Ubuntu
-- [ ] release/build artifact để test mà không cần .NET
-- [ ] README cập nhật trạng thái sau khi hoàn tất
+- [ ] interface chung cho virtualization backend
+- [ ] Windows Hyper-V availability/prerequisite detection
+- [ ] Linux KVM/libvirt availability detection
+- [ ] `/api/system` trả trạng thái readiness thật
+- [ ] UI hiển thị backend readiness và hướng dẫn thiếu prerequisite
+- [ ] chưa chạy workload nếu isolation backend chưa ready
+- [ ] CI pass Windows + Ubuntu
+- [ ] README update
 
-Milestone sau đó: **virtualization adapter + create isolated VM thật**.
+Milestone sau đó: **create isolated VM thật cho một project**.
 
 ---
 
-## 14. Cách tiếp cận khi một developer/AI mới vào dự án
+## 15. Hướng dẫn developer/AI mới
 
 Không quét toàn repo trước.
 
@@ -546,18 +539,22 @@ Thứ tự đọc:
 
 ```text
 1. README.md
-2. File được chỉ ra trong File map cho feature cần sửa
-3. Chỉ đọc dependency trực tiếp của file đó nếu cần
+2. File trong File map ứng với feature cần sửa
+3. Chỉ đọc dependency trực tiếp nếu cần
 ```
 
 Ví dụ:
 
-- sửa project discovery → đọc `internal/project/discovery.go`
-- sửa Hyper-V → đọc `internal/platform/hyperv/` sau khi folder được tạo
-- sửa KVM → đọc `internal/platform/libvirt/`
-- sửa API → đọc `internal/server/`
-- sửa UI → đọc `internal/web/`
-- sửa sandbox lifecycle → đọc `internal/sandbox/`
-- sửa tunnel → đọc `internal/tunnel/`
+- project discovery → `internal/project/discovery.go`
+- API → `internal/server/server.go`
+- UI → `internal/web/static/index.html`
+- startup → `cmd/oneclick-dev-server/main.go`
+- browser open → `internal/browser/open.go`
+- platform selection → `internal/platform/platform.go`
+- Hyper-V sau này → `internal/platform/hyperv/`
+- KVM/libvirt sau này → `internal/platform/libvirt/`
+- sandbox lifecycle sau này → `internal/sandbox/`
+- source sync sau này → `internal/sync/`
+- tunnel sau này → `internal/tunnel/`
 
-Mục tiêu của README này là để một người mới có thể hiểu **project làm gì, security boundary là gì, code nằm ở đâu, hiện đã làm tới đâu và bước tiếp theo là gì** mà không phải index/quét lại toàn bộ repository.
+Mục tiêu của README: một người mới chỉ cần đọc file này để biết **dự án làm gì, boundary bảo mật là gì, code nằm ở đâu, đã làm tới đâu, và bước tiếp theo là gì** mà không cần scan/index lại toàn repository.
