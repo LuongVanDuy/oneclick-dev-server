@@ -1,39 +1,76 @@
 <Window x:Class="OneClickDevServer.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="OneClick Dev Server" Height="560" Width="900" MinHeight="520" MinWidth="820">
+        Title="OneClick Dev Server" Height="680" Width="1040" MinHeight="620" MinWidth="900">
     <Grid Margin="28">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="20" />
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="16" />
             <RowDefinition Height="*" />
+            <RowDefinition Height="16" />
+            <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
         <StackPanel>
             <TextBlock Text="OneClick Dev Server" FontSize="30" FontWeight="SemiBold" />
-            <TextBlock Margin="0,6,0,0" Foreground="Gray" Text="Run and publish web projects without executing untrusted code on your Windows host." />
+            <TextBlock Margin="0,6,0,0" Foreground="Gray" Text="Select a XAMPP/Laragon project. Each project will run in its own isolated Hyper-V VM." />
         </StackPanel>
 
-        <Border Grid.Row="2" BorderBrush="#D0D0D0" BorderThickness="1" CornerRadius="8" Padding="18">
-            <StackPanel>
-                <TextBlock Text="Host safety" FontSize="18" FontWeight="SemiBold" />
-                <TextBlock Margin="0,6,0,12" TextWrapping="Wrap" Text="Deployment stays locked until the host can provide a Hyper-V isolation boundary." />
-                <Button x:Name="RunCheckButton" Width="170" Height="36" HorizontalAlignment="Left" Content="Run safety check" Click="RunCheckButton_Click" />
-            </StackPanel>
-        </Border>
+        <Grid Grid.Row="2">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="1.1*" />
+                <ColumnDefinition Width="18" />
+                <ColumnDefinition Width="0.9*" />
+            </Grid.ColumnDefinitions>
 
-        <Border Grid.Row="4" BorderBrush="#D0D0D0" BorderThickness="1" CornerRadius="8" Padding="18">
-            <Grid>
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto" />
-                    <RowDefinition Height="*" />
-                </Grid.RowDefinitions>
-                <TextBlock Text="Status" FontSize="18" FontWeight="SemiBold" />
-                <TextBox x:Name="StatusBox" Grid.Row="1" Margin="0,12,0,0" IsReadOnly="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto"
-                         Text="Not checked yet. No VM, tunnel, or project process has been started." />
-            </Grid>
+            <Border BorderBrush="#D0D0D0" BorderThickness="1" CornerRadius="8" Padding="18">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <DockPanel>
+                        <TextBlock Text="Projects" FontSize="18" FontWeight="SemiBold" VerticalAlignment="Center" />
+                        <Button x:Name="RefreshProjectsButton" DockPanel.Dock="Right" Width="120" Height="32"
+                                Content="Refresh" Click="RefreshProjectsButton_Click" />
+                    </DockPanel>
+
+                    <TextBlock Grid.Row="1" Margin="0,8,0,12" Foreground="Gray" TextWrapping="Wrap"
+                               Text="Detected from C:\xampp\htdocs and C:\laragon\www. Discovery does not execute project code." />
+
+                    <ListBox x:Name="ProjectsList" Grid.Row="2" DisplayMemberPath="DisplayName"
+                             SelectionChanged="ProjectsList_SelectionChanged" />
+
+                    <StackPanel Grid.Row="3" Margin="0,12,0,0">
+                        <TextBlock x:Name="SelectedPathText" Foreground="Gray" TextWrapping="Wrap" Text="Select a project." />
+                        <Button x:Name="CreateEnvironmentButton" Margin="0,10,0,0" Width="210" Height="38"
+                                HorizontalAlignment="Left" Content="Create isolated environment"
+                                IsEnabled="False" Click="CreateEnvironmentButton_Click" />
+                    </StackPanel>
+                </Grid>
+            </Border>
+
+            <Border Grid.Column="2" BorderBrush="#D0D0D0" BorderThickness="1" CornerRadius="8" Padding="18">
+                <StackPanel>
+                    <TextBlock Text="Isolation boundary" FontSize="18" FontWeight="SemiBold" />
+                    <TextBlock Margin="0,8,0,12" TextWrapping="Wrap"
+                               Text="One project = one VM, one writable VHDX, one database, one runtime, and one tunnel. The original host folder is never mounted into the VM." />
+                    <Button x:Name="RunCheckButton" Width="170" Height="36" HorizontalAlignment="Left"
+                            Content="Check Hyper-V" Click="RunCheckButton_Click" />
+                    <Separator Margin="0,16,0,14" />
+                    <TextBlock FontWeight="SemiBold" Text="Containment rules" />
+                    <TextBlock Margin="0,8,0,0" TextWrapping="Wrap"
+                               Text="• No shared folders or host drives&#10;• No shared database between sites&#10;• No VM-to-VM traffic&#10;• Block access to host/LAN&#10;• Public tunnel runs inside the site VM" />
+                </StackPanel>
+            </Border>
+        </Grid>
+
+        <Border Grid.Row="4" BorderBrush="#D0D0D0" BorderThickness="1" CornerRadius="8" Padding="14">
+            <TextBox x:Name="StatusBox" Height="95" IsReadOnly="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto"
+                     Text="Ready. No project code has been executed." />
         </Border>
     </Grid>
 </Window>
