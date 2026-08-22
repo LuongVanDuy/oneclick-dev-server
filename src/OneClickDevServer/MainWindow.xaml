@@ -1,0 +1,39 @@
+<Window x:Class="OneClickDevServer.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="OneClick Dev Server" Height="560" Width="900" MinHeight="520" MinWidth="820">
+    <Grid Margin="28">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="20" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="16" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <StackPanel>
+            <TextBlock Text="OneClick Dev Server" FontSize="30" FontWeight="SemiBold" />
+            <TextBlock Margin="0,6,0,0" Foreground="Gray" Text="Run and publish web projects without executing untrusted code on your Windows host." />
+        </StackPanel>
+
+        <Border Grid.Row="2" BorderBrush="#D0D0D0" BorderThickness="1" CornerRadius="8" Padding="18">
+            <StackPanel>
+                <TextBlock Text="Host safety" FontSize="18" FontWeight="SemiBold" />
+                <TextBlock Margin="0,6,0,12" TextWrapping="Wrap" Text="Deployment stays locked until the host can provide a Hyper-V isolation boundary." />
+                <Button x:Name="RunCheckButton" Width="170" Height="36" HorizontalAlignment="Left" Content="Run safety check" Click="RunCheckButton_Click" />
+            </StackPanel>
+        </Border>
+
+        <Border Grid.Row="4" BorderBrush="#D0D0D0" BorderThickness="1" CornerRadius="8" Padding="18">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+                <TextBlock Text="Status" FontSize="18" FontWeight="SemiBold" />
+                <TextBox x:Name="StatusBox" Grid.Row="1" Margin="0,12,0,0" IsReadOnly="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto"
+                         Text="Not checked yet. No VM, tunnel, or project process has been started." />
+            </Grid>
+        </Border>
+    </Grid>
+</Window>
