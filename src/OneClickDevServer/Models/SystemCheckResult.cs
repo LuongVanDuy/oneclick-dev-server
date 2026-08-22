@@ -5,4 +5,7 @@ public sealed record SystemCheckResult(
     bool IsAdministrator,
     bool HyperVEnabled,
     bool VirtualizationAvailable,
-    string Summary);
+    string Summary)
+{
+    public bool CanDeploy => IsWindows && IsAdministrator && HyperVEnabled && VirtualizationAvailable;
+}
