@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>OneClick Dev Server</title>
+  <style>
+    :root { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color-scheme: dark; }
+    body { margin: 0; background: #0b1020; color: #e8ecf3; }
+    main { max-width: 1100px; margin: 0 auto; padding: 32px 20px 64px; }
+    h1 { margin: 0 0 8px; font-size: 32px; }
+    p { color: #aeb8cc; }
+    .grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, .8fr); gap: 18px; margin-top: 24px; }
+    .card { background: #121a2d; border: 1px solid #27334f; border-radius: 14px; padding: 18px; }
+    .row { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:12px 0; border-bottom:1px solid #24304a; }
+    .row:last-child { border-bottom:0; }
+    .meta { font-size: 13px; color:#8fa0bd; word-break:break-all; }
+    .badge { display:inline-block; padding:4px 8px; border-radius:999px; background:#1d2944; color:#c7d2e7; font-size:12px; }
+    button { border:0; border-radius:9px; padding:9px 13px; background:#3968ef; color:white; cursor:pointer; font-weight:600; }
+    button:disabled { opacity:.45; cursor:not-allowed; }
+    .empty { padding: 18px 0; color:#8fa0bd; }
+    code { color:#cdd8f1; }
+    @media (max-width: 800px) { .grid { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+<main>
+  <h1>OneClick Dev Server</h1>
+  <p>Local project discovery with per-project VM isolation as the security boundary.</p>
+
+  <div class="grid">
+    <section class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px">
+        <h2 style="margin:0">Projects</h2>
+        <button id="refresh">Refresh</button>
+      </div>
+      <div id="projects" class="empty">Loading projects…</div>
+    </section>
+
+    <aside class="card">
+      <h2 style="margin-top:0">System</h2>
+      <div id="system" class="empty">Loading system info…</div>
+      <hr style="border:0;border-top:1px solid #27334f;margin:18px 0">
+      <strong>Current milestone</strong>
+      <p>Discovery/dashboard only. VM creation is intentionally disabled until the Hyper-V and KVM/libvirt adapters are implemented.</p>
+    </aside>
+  </div>
+</main>
+<script>
+async function json(url) {
+  const response = await fetch(url, { cache: 'no-store' });
+  if (!response.ok) throw new Error(await response.text());
+  return response.json();
+}
+async function loadSystem() {
+  const el = document.getElementById('system');
+  try {
+    const data = await json('/api/system');
+    el.innerHTML = `<div class="row"><span>OS</span><span class="badge">${escapeHtml(data.os)}</span></div>` +
+      `<div class="row"><span>Backend target</span><span class="badge">${escapeHtml(data.virtualizationBackend)}</span></div>` +
+      `<p class="meta">${escapeHtml(data.virtualizationMessage)}</p>`;
+  } catch (e) { el.textContent = e.message; }
+}
+async function loadProjects() {
+  const el = document.getElementById('projects');
+  el.textContent = 'Loading projects…';
+  try {
+    const projects = await json('/api/projects');
+    if (!projects.length) {
+      el.innerHTML = '<div class="empty">No projects found in the configured roots.</div>';
+      return;
+    }
+    el.innerHTML = projects.map(p => `<div class="row"><div><strong>${escapeHtml(p.name)}</strong><div class="meta">${escapeHtml(p.path)}</div></div><span class="badge">${escapeHtml(p.sourceKind)}</span></div>`).join('');
+  } catch (e) { el.textContent = e.message; }
+}
+function escapeHtml(value) {
+  return String(value).replace(/[&<>'"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[ch]));
+}
+document.getElementById('refresh').addEventListener('click', loadProjects);
+loadSystem();
+loadProjects();
+</script>
+</body>
+</html>
