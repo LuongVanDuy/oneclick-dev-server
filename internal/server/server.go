@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -50,16 +51,7 @@ func (s *Server) Serve() error {
 	return s.http.Serve(s.ln)
 }
 
-func (s *Server) Shutdown(rctx interface{ Done() <-chan struct{} }) error {
-	ctx, ok := rctx.(interface {
-		Deadline() (time.Time, bool)
-		Done() <-chan struct{}
-		Err() error
-		Value(any) any
-	})
-	if !ok {
-		return fmt.Errorf("invalid shutdown context")
-	}
+func (s *Server) Shutdown(ctx context.Context) error {
 	return s.http.Shutdown(ctx)
 }
 
