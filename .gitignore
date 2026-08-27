@@ -1,0 +1,38 @@
+# Runtime and user data (may contain website source, database or credentials)
+data/*
+!data/go.mod
+cache/
+diagnostics/
+.cache/
+.codex-cache/
+.test-tmp/
+.tools/
+.wpclean-cache/
+
+# Local dependencies and generated caches
+**/node_modules/
+**/.venv/
+**/.pytest_cache/
+**/__pycache__/
+**/*.egg-info/
+**/*.py[cod]
+frontend/dist/
+
+# Local secrets and logs
+.env
+.env.*
+*.pem
+*.key
+*.pfx
+*.p12
+*.log
+
+# Keep exactly one employee executable; ignore other generated binaries
+build/bin/*
+!build/bin/oneclick-dev-server.exe
+
+# Editor and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

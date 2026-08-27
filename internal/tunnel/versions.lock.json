@@ -1,0 +1,8 @@
+{
+  "schema": 2,
+  "cloudflared": {
+    "version": "2026.8.2",
+    "url": "https://github.com/cloudflare/cloudflared/releases/download/2026.8.2/cloudflared-linux-amd64",
+    "sha256": "fcfb02b575a52ca1af2e3267af4e1517bcdeb30ac48c834c69abaed3c0576ad2"
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "packages": [
+    {
+      "file": "bricks.2.3.10.zip",
+      "kind": "theme",
+      "slug": "bricks",
+      "version": "2.3.10",
+      "sha256": "00F8FA79F764D4717C2A5B6981638116FF4BE34EF75B98A89F5B793694777051"
+    },
+    {
+      "file": "bricks-child.zip",
+      "kind": "theme",
+      "slug": "bricks-child",
+      "sha256": "AD2C3FAC57FC89B05084EF48333D903D0A34C82EAD5D039961A2B3A80556567D"
+    },
+    {
+      "file": "duyanhwebpro-1.2.3.zip",
+      "kind": "plugin",
+      "slug": "duyanhwebpro",
+      "entry": "duyanhwebpro/duyanhwebpro.php",
+      "version": "1.2.3",
+      "sha256": "2AAFCDE3D3A7950FF6DE2894D1EE2D43B21BC6D4A82EB083872AC1DC3A353F77"
+    }
+  ]
+}

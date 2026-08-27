@@ -1,0 +1,52 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: python -m pip install --upgrade pip
+      - run: pip install -e . pytest
+      - run: pytest -q
+
+  windows-gui-smoke:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python -m pip install --upgrade pip
+      - run: pip install -e .
+      - name: Parse launcher with Windows PowerShell 5
+        shell: powershell
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path '.\giaodien.ps1'), [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Error $_.Message }
+            exit 1
+          }
+          Write-Host 'Windows PowerShell 5 launcher parse OK'
+      - name: Simulate legacy cp1252 Python stdout
+        shell: powershell
+        run: |
+          $env:PYTHONUTF8 = '0'
+          $env:PYTHONIOENCODING = 'cp1252'
+          python -c "import sys; assert sys.stdout.encoding.lower() == 'cp1252'; from wpclean.gui_runtime_entry import configure_console; configure_console(); assert sys.stdout.encoding.lower().replace('-','') == 'utf8'; print('GIAO DI\u1ec6N LOCAL')"
+      - name: Import guarded production GUI entry on Windows
+        run: python -c "import wpclean.gui_runtime_entry; import wpclean.gui_stable_runtime_entry; print('guarded GUI imports OK')"
+      - name: Compile production GUI modules
+        run: python -m py_compile src/wpclean/gui_runtime_entry.py src/wpclean/gui_stable_runtime_entry.py src/wpclean/gui_parallel_entry.py src/wpclean/gui_ftp_logging_entry.py src/wpclean/gui_server.py

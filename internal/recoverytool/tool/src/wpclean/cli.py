@@ -1,0 +1,526 @@
+from __future__ import annotations
+
+import json
+import os
+import platform
+import sys
+from pathlib import Path
+
+import typer
+from rich.console import Console
+from rich.progress import (
+    BarColumn,
+    Progress,
+    SpinnerColumn,
+    TaskProgressColumn,
+    TextColumn,
+    TimeElapsedColumn,
+    TransferSpeedColumn,
+)
+
+from .backup import verify_manifest, write_manifest
+from .db_bridge import export_database_via_php_bridge
+from .remote_backup import backup_wordpress_ftp
+from .scanners import scan_sql as run_sql_scan
+from .scanners import scan_uploads as run_upload_scan
+from .site_config import load_site_profile
+from .transport import FTPConfig, FTPTransport
+from .ui import show_findings
+
+app = typer.Typer(no_args_is_help=True, help="WordPress clean rebuild and malware triage CLI.")
+console = Console()
+
+
+def _human_bytes(value: float) -> str:
+    units = ["B", "KiB", "MiB", "GiB", "TiB"]
+    size = float(value)
+    for unit in units:
+        if size < 1024 or unit == units[-1]:
+            return f"{size:.2f} {unit}"
+        size /= 1024
+    return f"{size:.2f} TiB"
+
+
+def _profile_transport(config_path: Path) -> tuple[FTPTransport, str]:
+    profile = load_site_profile(config_path)
+    password = profile.password or os.getenv("WPCLEAN_FTP_PASSWORD") or typer.prompt("FTP password", hide_input=True)
+    cfg = FTPConfig(
+        host=profile.host,
+        username=profile.username,
+        password=password,
+        port=profile.port,
+        tls=profile.use_tls,
+        passive=profile.passive,
+        workers=profile.workers,
+        block_size=profile.block_mb * 1024 * 1024,
+    )
+    return FTPTransport(cfg), profile.remote_path
+
+
+def _read_backup_report(backup_root: Path) -> dict:
+    report_path = backup_root / "backup-report.json"
+    if not report_path.is_file():
+        return {}
+    try:
+        return json.loads(report_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _report_exclusions(backup_root: Path) -> list[dict]:
+    raw = _read_backup_report(backup_root)
+    exclusions = raw.get("exclusions", [])
+    return exclusions if isinstance(exclusions, list) else []
+
+
+def _print_exclusions(exclusions: list[dict]) -> None:
+    if not exclusions:
+        return
+    console.print(f"[yellow]Warning: {len(exclusions)} unreadable file(s) were explicitly EXCLUDED from verification and restore:[/yellow]")
+    for item in exclusions[:20]:
+        console.print(f" - [yellow]EXCLUDED[/yellow] {item.get('path')}: {item.get('error')}")
+    if len(exclusions) > 20:
+        console.print(f" - ... and {len(exclusions) - 20} more (see backup-report.json)")
+
+
+def _run_backup_with_progress(transport: FTPTransport, remote_root: str, out: Path, resume: bool):
+    current_stage = {"name": "starting"}
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[bold cyan]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TextColumn("{task.fields[files]}"),
+        TextColumn("{task.fields[bytes]}"),
+        TransferSpeedColumn(),
+        TimeElapsedColumn(),
+        console=console,
+        refresh_per_second=8,
+    ) as progress_ui:
+        task_id = progress_ui.add_task("Preparing backup", total=1, files="", bytes="")
+
+        def on_progress(event: dict) -> None:
+            phase = event.get("phase")
+            stage = event.get("stage", current_stage["name"])
+
+            if phase == "stage":
+                current_stage["name"] = stage
+                progress_ui.update(task_id, description=f"[{stage}] discovering files", total=1, completed=0, files="", bytes="")
+                return
+            if phase == "discover":
+                dirs = event.get("dirs_scanned", 0)
+                found = event.get("files_found", 0)
+                progress_ui.update(task_id, description=f"[{stage}] scanning directories", files=f"dirs {dirs} | files {found}", bytes="")
+                return
+            if phase == "discover_transfer":
+                found = event.get("files_found", 0)
+                completed = event.get("files_completed", 0)
+                transferred = event.get("bytes_downloaded", 0)
+                progress_ui.update(
+                    task_id,
+                    description=f"[{stage}] discovering + downloading",
+                    total=max(found, 1),
+                    completed=min(completed, max(found, 1)),
+                    files=f"{completed}/{found} discovered files",
+                    bytes=_human_bytes(transferred),
+                )
+                return
+            if phase == "discovered":
+                total_files = event.get("files_found", 0)
+                total_bytes = event.get("bytes_total", 0)
+                completed = event.get("files_completed", 0)
+                transferred = event.get("bytes_downloaded", 0)
+                progress_ui.update(task_id, description=f"[{stage}] downloading", total=max(total_files, 1), completed=completed, files=f"{completed}/{total_files} files", bytes=f"{_human_bytes(transferred)} / {_human_bytes(total_bytes)}" if total_bytes else _human_bytes(transferred))
+                return
+            if phase == "retry":
+                current = str(event.get("current_file", ""))
+                if len(current) > 56:
+                    current = "…" + current[-55:]
+                progress_ui.update(
+                    task_id,
+                    description=f"[{stage}] retry {event.get('attempt')}/{event.get('max_attempts')} {current}",
+                    files="",
+                    bytes=f"resume {_human_bytes(event.get('resume_offset', 0))}",
+                )
+                return
+            if phase == "file_failed":
+                current = str(event.get("current_file", ""))
+                if len(current) > 62:
+                    current = "…" + current[-61:]
+                progress_ui.update(task_id, description=f"[{stage}] EXCLUDED unreadable file: {current}", files="", bytes="")
+                return
+            if phase == "transfer":
+                total_files = event.get("files_total", 0)
+                completed = event.get("files_completed", 0)
+                transferred = event.get("bytes_downloaded", 0)
+                total_bytes = event.get("bytes_total", 0)
+                failed = event.get("files_failed", 0)
+                files_text = f"{completed}/{total_files} files"
+                if failed:
+                    files_text += f" | excluded {failed}"
+                progress_ui.update(task_id, description=f"[{stage}] downloading", total=max(total_files, 1), completed=completed, files=files_text, bytes=f"{_human_bytes(transferred)} / {_human_bytes(total_bytes)}" if total_bytes else _human_bytes(transferred))
+                return
+            if phase == "complete":
+                total_files = event.get("files_total", 0)
+                transferred = event.get("bytes_downloaded", 0)
+                failed = event.get("files_failed", 0)
+                suffix = f" | excluded {failed}" if failed else ""
+                progress_ui.update(task_id, description=f"[{stage}] complete{suffix}", total=max(total_files, 1), completed=max(total_files, 1), files=f"{total_files}/{total_files} files", bytes=_human_bytes(transferred))
+                return
+            if phase == "stage_skipped":
+                progress_ui.update(task_id, description=f"[{stage}] skipped", total=1, completed=1, files="", bytes="")
+                return
+            if phase == "config_file":
+                name = event.get("file", "config")
+                status = event.get("status", "")
+                progress_ui.update(task_id, description=f"[config] {name}: {status}", total=1, completed=1, files="", bytes="")
+                return
+            if phase == "verify":
+                progress_ui.update(task_id, description="[manifest] calculating and verifying SHA-256", total=None, files="", bytes="")
+                return
+            if phase == "verified":
+                ok = event.get("verified", False)
+                exclusions = int(event.get("exclusions", 0) or 0)
+                if ok and exclusions:
+                    description = f"[manifest] verification passed with {exclusions} exclusion(s)"
+                else:
+                    description = "[manifest] verification passed" if ok else "[manifest] verification failed"
+                progress_ui.update(task_id, description=description, total=1, completed=1, files="", bytes="")
+
+        return backup_wordpress_ftp(transport, remote_root, out, resume=resume, progress=on_progress)
+
+
+def _run_db_backup_with_progress(profile, transport: FTPTransport, out_path: Path):
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[bold cyan]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TextColumn("{task.fields[bytes]}"),
+        TransferSpeedColumn(),
+        TimeElapsedColumn(),
+        console=console,
+        refresh_per_second=8,
+    ) as progress_ui:
+        task_id = progress_ui.add_task("Preparing database bridge", total=None, bytes="")
+
+        def on_progress(event: dict) -> None:
+            phase = event.get("phase")
+            if phase == "upload_bridge":
+                progress_ui.update(task_id, description="Uploading temporary database bridge", total=None, bytes="")
+            elif phase == "request_dump":
+                progress_ui.update(task_id, description="Requesting database dump", total=None, bytes="")
+            elif phase == "download":
+                downloaded = event.get("bytes_downloaded", 0)
+                total = event.get("bytes_total")
+                progress_ui.update(
+                    task_id,
+                    description="Downloading database",
+                    total=total,
+                    completed=downloaded if total else 0,
+                    bytes=(f"{_human_bytes(downloaded)} / {_human_bytes(total)}" if total else _human_bytes(downloaded)),
+                )
+            elif phase == "remove_bridge":
+                removed = event.get("removed", False)
+                progress_ui.update(task_id, description="Temporary bridge removed" if removed else "WARNING: bridge removal failed", total=1, completed=1, bytes="")
+
+        return export_database_via_php_bridge(profile, transport, out_path, progress=on_progress)
+
+
+@app.command()
+def doctor() -> None:
+    console.print(f"Python: {sys.version.split()[0]}")
+    console.print(f"Platform: {platform.platform()}")
+    console.print("[green]CLI runtime looks usable.[/green]")
+
+
+@app.command("scan-sql")
+def scan_sql(path: Path = typer.Argument(..., exists=True, dir_okay=False)) -> None:
+    findings = run_sql_scan(path)
+    show_findings(findings)
+    raise typer.Exit(code=1 if findings else 0)
+
+
+@app.command("scan-uploads")
+def scan_uploads(path: Path = typer.Argument(..., exists=True, file_okay=False)) -> None:
+    findings = run_upload_scan(path)
+    show_findings(findings)
+    raise typer.Exit(code=1 if findings else 0)
+
+
+@app.command("scan-backup")
+def scan_backup(
+    backup_root: Path = typer.Argument(..., exists=True, file_okay=False),
+) -> None:
+    """Scan a complete backup root and automatically locate database/uploads."""
+    console.print(f"Backup root: {backup_root}")
+
+    manifest = backup_root / "manifest.json"
+    if manifest.exists():
+        ok, problems = verify_manifest(backup_root, manifest)
+        if ok:
+            exclusions = _report_exclusions(backup_root)
+            if exclusions:
+                console.print(f"[green]Backup manifest verification passed with {len(exclusions)} explicit exclusion(s).[/green]")
+                _print_exclusions(exclusions)
+            else:
+                console.print("[green]Backup manifest verification passed.[/green]")
+        else:
+            console.print("[red]Backup manifest verification failed; scan aborted.[/red]")
+            for problem in problems:
+                console.print(f" - {problem}")
+            raise typer.Exit(code=2)
+    else:
+        console.print("[yellow]No manifest.json found; continuing in audit mode.[/yellow]")
+
+    report = _read_backup_report(backup_root)
+    if report:
+        blocking = [
+            item for item in report.get("items", [])
+            if item.get("status") not in {"ok", "ok-with-exclusions"}
+            and not str(item.get("remote_path", "")).endswith(("/wp-content/mu-plugins", "/php.ini", "/.user.ini", "/robots.txt"))
+        ]
+        if blocking:
+            console.print("[yellow]Backup report contains blocking/missing stages:[/yellow]")
+            for item in blocking:
+                console.print(f" - {item.get('remote_path')}: {item.get('error') or item.get('status')}")
+
+    sql_path = backup_root / "database" / "original.sql"
+    if sql_path.exists():
+        console.print(f"\n[bold]Database scan:[/bold] {sql_path}")
+        db_findings = run_sql_scan(sql_path)
+        show_findings(db_findings)
+    else:
+        console.print("[yellow]Database backup not found at database/original.sql.[/yellow]")
+
+    upload_candidates = [
+        backup_root / "uploads",
+        backup_root / "wp-content" / "uploads",
+    ]
+    uploads_path = next((p for p in upload_candidates if p.exists() and p.is_dir()), None)
+
+    if uploads_path is None:
+        console.print("[yellow]Uploads backup directory was not found.[/yellow]")
+        console.print("Checked:")
+        for candidate in upload_candidates:
+            console.print(f" - {candidate}")
+        console.print("Run [bold]backup-status[/bold] to inspect which filesystem stages were actually saved.")
+        return
+
+    console.print(f"\n[bold]Uploads scan:[/bold] {uploads_path}")
+    upload_findings = run_upload_scan(uploads_path)
+    show_findings(upload_findings)
+
+
+@app.command("backup-status")
+def backup_status(
+    backup_root: Path = typer.Argument(..., exists=True, file_okay=False),
+) -> None:
+    """Show what a backup contains and why any expected stage is missing."""
+    console.print(f"Backup root: {backup_root.resolve()}")
+
+    expected = {
+        "database": backup_root / "database" / "original.sql",
+        "uploads": backup_root / "uploads",
+        "themes": backup_root / "themes",
+        "plugins": backup_root / "plugins",
+        "mu-plugins": backup_root / "mu-plugins",
+        "config": backup_root / "config",
+        "manifest": backup_root / "manifest.json",
+    }
+    for name, path in expected.items():
+        if path.exists():
+            if path.is_file():
+                console.print(f"[green]✓[/green] {name}: {path} ({_human_bytes(path.stat().st_size)})")
+            else:
+                file_count = sum(1 for p in path.rglob("*") if p.is_file())
+                console.print(f"[green]✓[/green] {name}: {path} ({file_count} files)")
+        else:
+            console.print(f"[red]✗[/red] {name}: missing ({path})")
+
+    report = _read_backup_report(backup_root)
+    if report:
+        console.print("\n[bold]Filesystem backup report:[/bold]")
+        for item in report.get("items", []):
+            status = item.get("status", "unknown")
+            if status == "ok":
+                icon = "[green]✓[/green]"
+            elif status == "ok-with-exclusions":
+                icon = "[yellow]⚠[/yellow]"
+            else:
+                icon = "[red]✗[/red]"
+            console.print(f"{icon} {item.get('remote_path')} -> {item.get('local_path')} | {status}")
+        _print_exclusions(_report_exclusions(backup_root))
+
+
+@app.command("manifest")
+def manifest(path: Path = typer.Argument(..., exists=True, file_okay=False)) -> None:
+    out = write_manifest(path)
+    console.print(f"[green]Manifest written:[/green] {out}")
+
+
+@app.command("verify-backup")
+def verify_backup(path: Path = typer.Argument(..., exists=True, file_okay=False)) -> None:
+    ok, problems = verify_manifest(path)
+    if ok:
+        exclusions = _report_exclusions(path)
+        if exclusions:
+            console.print(f"[green]Backup verification passed with {len(exclusions)} explicit exclusion(s).[/green]")
+            _print_exclusions(exclusions)
+        else:
+            console.print("[green]Backup verification passed.[/green]")
+        return
+    console.print("[red]Backup verification failed.[/red]")
+    for problem in problems:
+        console.print(f" - {problem}")
+    raise typer.Exit(code=2)
+
+
+@app.command("ftp-test")
+def ftp_test(
+    host: str = typer.Option(..., "--host"),
+    username: str = typer.Option(..., "--user"),
+    port: int = typer.Option(21, "--port"),
+    tls: bool = typer.Option(True, "--tls/--plain-ftp"),
+    passive: bool = typer.Option(True, "--passive/--active"),
+) -> None:
+    password = os.getenv("WPCLEAN_FTP_PASSWORD") or typer.prompt("FTP password", hide_input=True)
+    cfg = FTPConfig(host=host, username=username, password=password, port=port, tls=tls, passive=passive, workers=1)
+    pwd = FTPTransport(cfg).test_connection()
+    mode = "FTPS" if tls else "FTP"
+    console.print(f"[green]{mode} connection OK.[/green] Remote cwd: {pwd}")
+    if not tls:
+        console.print("[yellow]Warning: plain FTP sends credentials without transport encryption.[/yellow]")
+
+
+@app.command("ftp-test-config")
+def ftp_test_config(config: Path = typer.Argument(..., exists=True, dir_okay=False)) -> None:
+    profile = load_site_profile(config)
+    transport, remote_root = _profile_transport(config)
+    pwd = transport.test_connection()
+    mode = "FTPS" if profile.use_tls else "FTP"
+    console.print(f"[green]{mode} connection OK.[/green]")
+    console.print(f"Host: {profile.host}:{profile.port}")
+    console.print(f"Remote cwd: {pwd}")
+    console.print(f"WordPress root configured: {remote_root}")
+    if not profile.use_tls:
+        console.print("[yellow]Warning: this profile uses plain FTP; credentials/data are not transport-encrypted.[/yellow]")
+
+
+@app.command("backup-ftp")
+def backup_ftp(
+    host: str = typer.Option(..., "--host"),
+    username: str = typer.Option(..., "--user"),
+    remote_root: str = typer.Option(..., "--remote-root"),
+    out: Path = typer.Option(..., "--out"),
+    port: int = typer.Option(21, "--port"),
+    tls: bool = typer.Option(True, "--tls/--plain-ftp"),
+    passive: bool = typer.Option(True, "--passive/--active"),
+    workers: int = typer.Option(6, "--workers", min=1, max=16),
+    block_mb: int = typer.Option(1, "--block-mb", min=1, max=8),
+    resume: bool = typer.Option(True, "--resume/--no-resume"),
+) -> None:
+    password = os.getenv("WPCLEAN_FTP_PASSWORD") or typer.prompt("FTP password", hide_input=True)
+    if not tls:
+        console.print("[yellow]Warning: plain FTP is unencrypted. Prefer --tls whenever the host supports FTPS.[/yellow]")
+    cfg = FTPConfig(host=host, username=username, password=password, port=port, tls=tls, passive=passive, workers=workers, block_size=block_mb * 1024 * 1024)
+    transport = FTPTransport(cfg)
+    pwd = transport.test_connection()
+    console.print(f"Connected. Remote cwd: {pwd}")
+    console.print(f"Transfer profile: workers={workers}, block={block_mb} MiB, resume={resume}, passive={passive}")
+    report = _run_backup_with_progress(transport, remote_root, out, resume)
+    _print_backup_report(report)
+
+
+@app.command("backup-config")
+def backup_config(
+    config: Path = typer.Argument(..., exists=True, dir_okay=False),
+    out: Path | None = typer.Option(None, "--out"),
+    resume: bool = typer.Option(True, "--resume/--no-resume"),
+) -> None:
+    profile = load_site_profile(config)
+    transport, remote_root = _profile_transport(config)
+    out = out or Path("backups") / profile.host
+    if not profile.use_tls:
+        console.print("[yellow]Warning: profile protocol=ftp uses unencrypted transport.[/yellow]")
+    pwd = transport.test_connection()
+    console.print(f"Connected to {profile.host}:{profile.port}. Remote cwd: {pwd}")
+    console.print(f"WordPress root: {remote_root}")
+    console.print(f"Transfer profile: workers={profile.workers}, block={profile.block_mb} MiB, resume={resume}, passive={profile.passive}")
+    console.print(f"Local backup: {out}")
+    report = _run_backup_with_progress(transport, remote_root, out, resume)
+    _print_backup_report(report)
+
+
+@app.command("db-backup-config")
+def db_backup_config(
+    config: Path = typer.Argument(..., exists=True, dir_okay=False),
+    out: Path | None = typer.Option(None, "--out", help="SQL output path. Defaults to ./backups/<host>/database/original.sql"),
+) -> None:
+    profile = load_site_profile(config)
+    transport, _ = _profile_transport(config)
+    out = out or Path("backups") / profile.host / "database" / "original.sql"
+
+    console.print(f"Database backup target: {out}")
+    console.print(f"Website URL: {profile.web_base_url}")
+    console.print("[yellow]A temporary PHP bridge will be uploaded and removed automatically.[/yellow]")
+
+    result = _run_db_backup_with_progress(profile, transport, out)
+
+    console.print(f"[green]Database backup completed:[/green] {result.sql_path}")
+    console.print(f"Size: {_human_bytes(result.bytes_downloaded)}")
+    console.print(f"SHA-256: {result.sha256}")
+    console.print("[green]Temporary database bridge cleanup was attempted automatically.[/green]")
+
+    backup_root = out.parent.parent
+    if backup_root.exists():
+        manifest_path = write_manifest(backup_root)
+        ok, problems = verify_manifest(backup_root, manifest_path)
+        if ok:
+            exclusions = _report_exclusions(backup_root)
+            if exclusions:
+                console.print(f"[green]Full recovery set verification passed with {len(exclusions)} explicit exclusion(s):[/green] {manifest_path}")
+                _print_exclusions(exclusions)
+            else:
+                console.print(f"[green]Full backup manifest regenerated and verification passed:[/green] {manifest_path}")
+        else:
+            console.print("[red]Backup manifest verification failed after database export.[/red]")
+            for problem in problems:
+                console.print(f" - {problem}")
+            raise typer.Exit(code=2)
+
+
+def _print_backup_report(report) -> None:
+    total_files = sum(item.files_total for item in report.items)
+    downloaded = sum(item.files_downloaded for item in report.items)
+    skipped = sum(item.files_skipped for item in report.items)
+    transferred = sum(item.bytes_downloaded for item in report.items)
+    console.print(f"Files discovered: {total_files}")
+    console.print(f"Downloaded: {downloaded}; resumed/already complete: {skipped}")
+    console.print(f"Transferred this run: {_human_bytes(transferred)}")
+    console.print(f"Manifest: {report.manifest_path}")
+
+    _print_exclusions(report.exclusions)
+
+    blocking = [item for item in report.items if item.status not in {"ok", "ok-with-exclusions"}]
+    for item in blocking:
+        console.print(f"[yellow]Skipped {item.remote_path}: {item.error}[/yellow]")
+
+    if report.verified:
+        if report.verified_with_exclusions:
+            console.print(f"[green]Filesystem backup verification passed with {len(report.exclusions)} explicit exclusion(s).[/green]")
+            console.print("[cyan]Excluded files are recorded in backup-report.json and will not be restored.[/cyan]")
+        else:
+            console.print("[green]Filesystem backup completed and SHA-256 verification passed.[/green]")
+        console.print("[cyan]Database is not exported by FTP. Run db-backup-config for the database stage.[/cyan]")
+        return
+
+    console.print("[red]Backup verification failed. Destructive rebuild must remain locked.[/red]")
+    for problem in report.verification_problems:
+        console.print(f" - {problem}")
+    raise typer.Exit(code=2)
+
+
+if __name__ == "__main__":
+    app()

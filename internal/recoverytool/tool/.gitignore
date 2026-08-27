@@ -1,0 +1,18 @@
+.venv/
+.pytest_cache/
+.wpclean-cache/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.env
+backups/
+reports/
+repairs/
+logs/
+evidence/
+*.sql
+
+# Local site credentials / connection profiles
+sites/*.json
+!sites/*.example.json
+*.local.json

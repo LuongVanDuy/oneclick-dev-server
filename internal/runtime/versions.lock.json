@@ -1,0 +1,27 @@
+{
+  "schema": 2,
+  "ubuntu": "24.04",
+  "runtimeRevision": "native-v2",
+  "packages": [
+    "acl",
+    "apparmor",
+    "apparmor-utils",
+    "ca-certificates",
+    "curl",
+    "gzip",
+    "iptables",
+    "mariadb-client",
+    "mariadb-server",
+    "nginx",
+    "php8.3-cli",
+    "php8.3-curl",
+    "php8.3-fpm",
+    "php8.3-gd",
+    "php8.3-intl",
+    "php8.3-mbstring",
+    "php8.3-mysql",
+    "php8.3-opcache",
+    "php8.3-xml",
+    "php8.3-zip"
+  ]
+}
