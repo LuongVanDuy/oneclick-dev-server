@@ -5,7 +5,11 @@ from pathlib import Path
 
 import pytest
 
-from wpclean.rebuild_resume import _bridge_error_detail, resume_database_import
+from wpclean.rebuild_resume import (
+    _bridge_error_detail,
+    _bridge_reported_failure,
+    resume_database_import,
+)
 from wpclean.site_config import SiteConnectionProfile
 
 
@@ -33,6 +37,27 @@ def test_bridge_error_detail_keeps_non_json_server_body_short():
     detail = _bridge_error_detail(b"<html><body>Server failure</body></html>", status=500)
     assert detail.startswith("HTTP 500:")
     assert "Server failure" in detail
+
+
+def test_html_500_is_not_mistaken_for_structured_bridge_failure():
+    assert _bridge_reported_failure(b"<html><body>500 Internal Server Error</body></html>") is False
+
+
+def test_empty_500_is_not_mistaken_for_structured_bridge_failure():
+    assert _bridge_reported_failure(b"") is False
+
+
+def test_bridge_json_failure_still_fails_closed():
+    body = json.dumps(
+        {
+            "ok": False,
+            "message": "SQL import failed",
+            "statement": 8,
+            "errno": 1062,
+            "error": "Duplicate entry",
+        }
+    ).encode("utf-8")
+    assert _bridge_reported_failure(body) is True
 
 
 def test_resume_refuses_when_report_does_not_prove_destructive_stage_reached(
