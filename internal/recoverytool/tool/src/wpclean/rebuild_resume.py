@@ -40,14 +40,31 @@ class ResumeDatabaseResult:
     stale_files_removed: list[str]
 
 
+def _bridge_error_payload(body: bytes) -> dict[str, object] | None:
+    """Return a structured bridge response only when the server returned JSON."""
+    text = body.decode("utf-8", errors="replace").strip()
+    if not text:
+        return None
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _bridge_reported_failure(body: bytes) -> bool:
+    """Distinguish a real bridge failure from a proxy/web-server generated 5xx page."""
+    payload = _bridge_error_payload(body)
+    return payload is not None and payload.get("ok") is False
+
+
 def _bridge_error_detail(body: bytes, *, status: int | None = None) -> str:
     text = body.decode("utf-8", errors="replace").strip()
     if not text:
         return f"HTTP {status}: empty response body" if status else "empty response body"
 
-    try:
-        payload = json.loads(text)
-    except json.JSONDecodeError:
+    payload = _bridge_error_payload(body)
+    if payload is None:
         compact = " ".join(text.split())
         if len(compact) > 1200:
             compact = compact[:1200] + "..."
@@ -169,7 +186,13 @@ def import_database_with_diagnostics(
                     raw = response.read()
             except HTTPError as exc:
                 body = exc.read()
-                if 500 <= exc.code < 600 and not body.strip():
+                # Shared hosting frequently replaces the bridge response with an
+                # Apache/LiteSpeed/nginx HTML 500 page after the PHP request has
+                # already advanced the import checkpoint. Probe the FTP
+                # checkpoint for any non-structured 5xx response before failing.
+                # A JSON {"ok": false, ...} response is emitted by our bridge and
+                # therefore remains an immediate, diagnostic failure.
+                if 500 <= exc.code < 600 and not _bridge_reported_failure(body):
                     time.sleep(0.75)
                     state = _read_remote_import_checkpoint(transport, remote_state)
                     if state is not None:
@@ -205,7 +228,7 @@ def import_database_with_diagnostics(
                                     "phase": "db_import_retry",
                                     "attempt": checkpoint_wait_retries,
                                     "max_attempts": max_checkpoint_wait_retries,
-                                    "current": "Hosting ngắt request; đang kiểm tra checkpoint FTP",
+                                    "current": "Hosting trả HTTP 5xx; đang kiểm tra checkpoint FTP",
                                 }
                             )
                         time.sleep(float(min(checkpoint_wait_retries, 3)))
